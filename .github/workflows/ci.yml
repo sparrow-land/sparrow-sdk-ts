@@ -33,10 +33,6 @@ jobs:
   # parses that the released server no longer sends.
   server:
     name: server-backed tests (published image)
-    # Until ghcr.io/sparrow-land/sparrow is published (the core's publish-image
-    # workflow has not been run), this job cannot pull its service image; keep it
-    # visible but non-blocking. Remove this line once the image exists.
-    continue-on-error: true
     runs-on: ubuntu-latest
     services:
       sparrow:
