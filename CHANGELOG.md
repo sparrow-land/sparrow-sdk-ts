@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The package stands alone: nothing in it depends on the Sparrow monorepo. The
+  server-backed suites now resolve a server from the environment —
+  `SPARROW_TEST_SERVER=<origin>` to run against any reachable instance, or
+  `SPARROW_API_DIST=<the server's built apps/api/dist>` to boot one in-process
+  as before — and skip, with a printed reason, when neither is set. See
+  "Running the tests" in the README.
+
 ## [0.1.0] - 2026-09-18
 
 The first release. Everything a client needs to talk to a Sparrow instance now

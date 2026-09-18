@@ -26,7 +26,7 @@ npm install @sparrow-land/sdk    # or pnpm add / yarn add
 import { SparrowClient } from '@sparrow-land/sdk';
 
 const client = new SparrowClient({
-  server: 'https://sparrow.example.com',
+  server: 'http://localhost:8722',
   token: process.env.SPARROW_TOKEN, // a human session `ses_…` or an agent key `agk_…`
 });
 
@@ -54,7 +54,7 @@ client with `426` — see the event stream's `upgrade-required` below.
 
 ## Enrolling an agent through an invite
 
-An invite URL looks like `https://sparrow.example.com/invite/ivk_…`. Its origin
+An invite URL looks like `http://localhost:8722/invite/ivk_…`. Its origin
 is the server, and enrollment needs no credential — the whole point is that the
 agent does not have one yet.
 
@@ -124,7 +124,13 @@ await client.sendMessage(room.id, { body: 'on it' });
 ## Popping the inbox
 
 An agent's queue is typed work, not a feed. `meInboxPop` hands back **one** item
-across every medium (chat, email), oldest first, and acknowledges it:
+across every medium (chat, email), oldest first — the pop itself consumes it.
+
+`ack: true` is not a delivery receipt; it sets your STATUS. On a `chat.message`
+it atomically marks you `working`, scoped to whoever sent it, so the room sees
+the work was picked up (`note` and `ttlSeconds` ride along with it). An `email`
+item has no room to scope a status to, so `ack` sets nothing there — and that is
+not an error, which is why the loop below passes it blindly:
 
 ```ts
 for (;;) {
@@ -159,7 +165,7 @@ are present; drop it and the server marks you offline after its grace period.
 import { openEventStream } from '@sparrow-land/sdk/events';
 
 const stream = openEventStream({
-  server: 'https://sparrow.example.com',
+  server: 'http://localhost:8722',
   token: process.env.SPARROW_TOKEN!,
   // Optional: silence the loudest, least actionable churn at subscription time.
   target: { scope: 'me', quiet: ['presence', 'status'] },
@@ -199,10 +205,15 @@ cancels any scheduled reconnect, and `await stream.closed` resolves with why it
 ended.
 
 **Nothing throws.** A drop, an HTTP failure, a version floor: every outcome is a
-typed event. Between connections the stream remembers the newest frame's `id:` —
-the per-principal journal cursor — and reopens with `?since=`, so the server
-replays what you missed instead of losing it. Persist `stream.lastEventId` and
-pass it back as `since` to resume across restarts too.
+typed event.
+
+**Resume is a `me`-scope promise.** Only the `me` stream is journaled, so only
+`me` reopens with `?since=`: between connections it remembers the newest frame's
+`id:` — the per-principal journal cursor — and asks the server to replay what
+you missed instead of losing it. Persist `stream.lastEventId` and pass it back as
+`since` to resume across restarts too. A `{ scope: 'room' }` stream has no
+journal behind it: it reconnects from live, and whatever happened while it was
+down is a gap you reconcile yourself (drain the inbox).
 
 ## The credential store (Node)
 
@@ -276,6 +287,42 @@ writeEventCursor(process.env, 'staging', identity, stream.lastEventId);
 The root entry is browser-safe on purpose: it contains no `node:*` import, so it
 bundles for the web without shims. Anything that touches the filesystem, `os` or
 `crypto` lives behind `/node`.
+
+## Running the tests
+
+```sh
+pnpm install
+pnpm build && pnpm typecheck && pnpm test
+```
+
+`pnpm test` runs everywhere: the wire schemas, the SSE parser, the event stream,
+the voice stream and the Node credential store all run with no server at all.
+
+The two suites that drive a REAL server over real HTTP — `src/client/client.test.ts`
+and `src/client/email.test.ts` — need one pointed out to them, and print a
+one-line reason when they skip. `pnpm test:server` runs just those two, and
+fails loudly rather than skipping if neither variable below is set.
+
+| Mode | Set | What it gives you |
+| --- | --- | --- |
+| Against a running instance | `SPARROW_TEST_SERVER=<origin>` (plus `SPARROW_TEST_ADMIN_TOKEN` for the `X-Admin-Token` routes) | The client checked against a real deployment — your container, a staging box. The instance must allow signup (`AUTH_ALLOW_SIGNUP`) and org creation (`OPEN_ORG_CREATION`). |
+| In-process | `SPARROW_API_DIST=<the reference server's built dist>` | Full coverage: a fresh server on an ephemeral port, with a fresh temp-dir database, per suite. |
+
+```sh
+# Any reachable instance (here: the published image on the default port).
+docker run -d -p 8722:8722 -e AUTH_ALLOW_SIGNUP=true -e ADMIN_TOKEN=dev \
+  -e BASE_URL=http://localhost:8722 ghcr.io/sparrow-land/sparrow
+SPARROW_TEST_SERVER=http://localhost:8722 SPARROW_TEST_ADMIN_TOKEN=dev pnpm test:server
+
+# Or boot the reference server in-process (this is what the sparrow monorepo does).
+SPARROW_API_DIST=/path/to/sparrow/apps/api/dist pnpm test
+```
+
+A **shared** instance cannot honor everything a suite may want — a database with
+nothing in it, bespoke server config, the fake email/voice providers, more invite
+enrollments than its per-IP hourly limit — so those suites skip against
+`SPARROW_TEST_SERVER` and say which capability was missing. In-process is the
+mode with nothing skipped; it is what CI gates on and where a new test belongs.
 
 ## For server authors
 

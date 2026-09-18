@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SparrowClient, ApiError, clientBuildVersion, type SparrowEvent, type PrincipalEvent } from './index.js';
 import type { MessageReceivedEvent, MessageNewEvent } from '../types/index.js';
-import { startServer, sleep, type Harness } from './harness.js';
+import { describeServer, serverMode, startServer, sleep, type Harness } from './harness.js';
 
 /* ------------------------------------------------------------------ *
  * Shared helpers
@@ -24,10 +24,21 @@ async function joinHuman(
   orgId: string,
   displayName: string,
 ): Promise<{ client: SparrowClient; userId: string }> {
+  const address = email(displayName);
+  if (serverMode === 'remote') {
+    // A SHARED instance rate limits the enroll knock (10/hour/IP) far below what
+    // a whole run needs. These suites are not testing enrollment — they need a
+    // second human in the org — so add them to the roster directly. The invite
+    // path itself is covered by `invites & enrollment`, in-process.
+    const client = new SparrowClient({ server: h.url });
+    const user = await client.signup({ email: address, password: 'password123', displayName });
+    await owner.addOrgMember(orgId, { email: address });
+    return { client, userId: user.user.id };
+  }
   const invite = await owner.createInvite(orgId);
   const token = invite.url.split('/invite/')[1]!;
   const client = new SparrowClient({ server: h.url });
-  const user = await client.signup({ email: email(displayName), password: 'password123', displayName });
+  const user = await client.signup({ email: address, password: 'password123', displayName });
   const res = await client.enrollHuman(token);
   if (res.status === 'pending') await owner.approveEnrollment(orgId, res.enrollment.id);
   return { client, userId: user.user.id };
@@ -40,7 +51,13 @@ async function makeAgent(h: Harness, owner: SparrowClient, orgId: string, name: 
 }
 
 async function firstOrgId(c: SparrowClient): Promise<string> {
-  return (await c.meOrgs())[0]!.org.id;
+  const orgs = await c.meOrgs();
+  if (orgs[0]) return orgs[0].org.id;
+  // Against a SHARED server (`SPARROW_TEST_SERVER`) this human is not the
+  // instance's first, so nothing was bootstrapped for them: found the org the
+  // suite will work inside. In-process every suite gets a fresh instance, so
+  // the signup above always founded one and this never runs.
+  return (await c.createOrg({ name: `sdk-tests-${Date.now()}-${emailSeq++}` })).id;
 }
 
 /* ================================================================== *
@@ -89,7 +106,7 @@ describe('client identification', () => {
  * Accounts & sessions
  * ================================================================== */
 
-describe('accounts & sessions', () => {
+describeServer('accounts & sessions', ['fresh-instance'], () => {
   let h: Harness;
   beforeAll(async () => (h = await startServer()));
   afterAll(() => h.close());
@@ -226,7 +243,7 @@ describe('accounts & sessions', () => {
  * Orgs
  * ================================================================== */
 
-describe('orgs', () => {
+describeServer('orgs', ['server-config'], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -290,7 +307,7 @@ describe('orgs', () => {
  * Invites & enrollment
  * ================================================================== */
 
-describe('invites & enrollment', () => {
+describeServer('invites & enrollment', ['enrollment-quota'], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -440,7 +457,7 @@ describe('invites & enrollment', () => {
  * Agents, visibility & sharing
  * ================================================================== */
 
-describe('agents & sharing', () => {
+describeServer('agents & sharing', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -535,7 +552,7 @@ describe('agents & sharing', () => {
  * Rooms, members & invitations
  * ================================================================== */
 
-describe('rooms, members & invitations', () => {
+describeServer('rooms, members & invitations', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -620,7 +637,7 @@ describe('rooms, members & invitations', () => {
  * DMs & messages
  * ================================================================== */
 
-describe('DMs & messages', () => {
+describeServer('DMs & messages', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -917,7 +934,7 @@ describe('DMs & messages', () => {
  * same engine, and it costs the agent nothing.
  * ================================================================== */
 
-describe('hints (the API teaches agents at the pause)', () => {
+describeServer('hints (the API teaches agents at the pause)', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -989,7 +1006,7 @@ describe('hints (the API teaches agents at the pause)', () => {
  * Events (SSE)
  * ================================================================== */
 
-describe('events (SSE)', () => {
+describeServer('events (SSE)', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -1346,7 +1363,7 @@ describe('events (SSE)', () => {
  * Admin, config & misc
  * ================================================================== */
 
-describe('admin, config & misc', () => {
+describeServer('admin, config & misc', ['admin', 'server-config'], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -1406,7 +1423,7 @@ describe('admin, config & misc', () => {
  * Voice (STT & TTS) — fake provider registered
  * ================================================================== */
 
-describe('voice (STT & TTS)', () => {
+describeServer('voice (STT & TTS)', ['fake-voice'], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;
@@ -1470,7 +1487,7 @@ describe('voice (STT & TTS)', () => {
  * Voice — no provider registered (keyless dev stack)
  * ================================================================== */
 
-describe('voice (no provider registered)', () => {
+describeServer('voice (no provider registered)', ['voice-off'], () => {
   let h: Harness;
   let owner: SparrowClient;
   beforeAll(async () => {
@@ -1499,7 +1516,7 @@ describe('voice (no provider registered)', () => {
  * Unified attention (layer 3) — the work queue + the activity timeline
  * ================================================================== */
 
-describe('unified attention (layer 3)', () => {
+describeServer('unified attention (layer 3)', [], () => {
   let h: Harness;
   let owner: SparrowClient;
   let orgId: string;

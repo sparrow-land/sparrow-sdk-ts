@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Everything that needs no server: build, types, and the unit suites. The
+  # server-backed suites skip here, with a printed reason.
+  unit:
+    name: build + typecheck + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  # The client against a REAL sparrow: the published server image, on the port
+  # it listens on, with signup and org creation open so the suites can bootstrap
+  # themselves. Catches the drift no unit test can — a wire shape this SDK
+  # parses that the released server no longer sends.
+  server:
+    name: server-backed tests (published image)
+    runs-on: ubuntu-latest
+    services:
+      sparrow:
+        image: ghcr.io/sparrow-land/sparrow:latest
+        ports:
+          - 8722:8722
+        volumes:
+          - sparrow-data:/data
+        env:
+          BASE_URL: http://localhost:8722
+          ADMIN_TOKEN: ci-admin-token
+          AUTH_ALLOW_SIGNUP: 'true'
+          OPEN_ORG_CREATION: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The image carries no shell tooling worth a --health-cmd, so wait from
+      # the runner instead.
+      - name: Wait for the server
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:8722/healthz; then echo; exit 0; fi
+            sleep 2
+          done
+          echo "sparrow never became healthy"
+          docker ps -a
+          exit 1
+
+      - name: Server-backed suites
+        env:
+          SPARROW_TEST_SERVER: http://localhost:8722
+          SPARROW_TEST_ADMIN_TOKEN: ci-admin-token
+        run: pnpm test:server

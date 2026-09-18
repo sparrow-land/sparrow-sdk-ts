@@ -4,10 +4,11 @@
  * (`EMAIL_PROVIDER=fake` + `EMAIL_ORG_SUFFIX`), so these double as a contract
  * check against the live routes and the `common-types` wire shapes.
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, expect, it } from 'vitest';
 import { SparrowClient, ApiError, type PrincipalEvent } from './index.js';
 import type { EmailReceivedEvent, EmailQuarantinedEvent } from '../types/index.js';
 import {
+  describeServer,
   startServer,
   startEmailServer,
   deliverEmail,
@@ -77,7 +78,7 @@ function inboundFromStranger(ctx: Acme, from: string, overrides: Record<string, 
   });
 }
 
-describe('email — the medium off', () => {
+describeServer('email — the medium off', ['email-off'], () => {
   let h: Harness;
   beforeAll(async () => (h = await startServer()));
   afterAll(() => h.close());
@@ -91,7 +92,7 @@ describe('email — the medium off', () => {
   });
 });
 
-describe('email — agent surfaces (/me/email/*)', () => {
+describeServer('email — agent surfaces (/me/email/*)', ['fake-email'], () => {
   let h: Harness;
   beforeAll(async () => (h = await startEmailServer()));
   afterAll(() => h.close());
@@ -289,7 +290,7 @@ describe('email — agent surfaces (/me/email/*)', () => {
   });
 });
 
-describe('email — human/org surfaces', () => {
+describeServer('email — human/org surfaces', ['fake-email'], () => {
   let h: Harness;
   beforeAll(async () => (h = await startEmailServer()));
   afterAll(() => h.close());
