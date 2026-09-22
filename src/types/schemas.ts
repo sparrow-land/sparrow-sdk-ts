@@ -3327,6 +3327,18 @@ export const CapabilitiesResponseSchema = z.object({
    */
   email: z.boolean().default(false),
   /**
+   * Whether this instance can SEND mail: true iff an outbound email webhook is
+   * configured (`email.webhookUrl`). Independent of `email` — that boolean is the
+   * email MEDIUM (agent mailboxes, which also need `EMAIL_ORG_SUFFIX`), while this
+   * one is the plain ability to relay a message out. The two really do come apart:
+   * a webhook with no suffix relays mail with the medium off, and the `fake`
+   * provider runs the medium with nothing to relay through. Clients gate every
+   * "we will email them" offer — the invite-by-email form above all — on THIS
+   * boolean, so an instance that cannot send never promises to. Defaulted so
+   * pre-outbound servers parse.
+   */
+  emailOutbound: z.boolean().default(false),
+  /**
    * Whether an automatic reviewer (an `LlmJudge`) is registered here. A `judge`
    * email policy on an instance without one degrades to approve, so an org admin
    * is told that plainly rather than the UI guessing. Independent of `email`: the

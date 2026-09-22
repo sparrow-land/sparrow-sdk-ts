@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-22
+
+### Added
+
+- `CapabilitiesResponse.emailOutbound`: whether the instance can send mail
+  on its own behalf (invite-by-email). Defaults to `false` when a server
+  does not send it, so older servers still parse.
+
 ### Changed
 
 - The package stands alone: nothing in it depends on the Sparrow monorepo. The

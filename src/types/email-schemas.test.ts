@@ -755,6 +755,26 @@ describe('capabilities gains email', () => {
     expect(CapabilitiesResponseSchema.safeParse({ voice: { stt: true, tts: true }, email: 'yes' }).success).toBe(false);
   });
 
+  /**
+   * Outbound mail is a SEPARATE fact from the medium: the invite-by-email path
+   * rides the `email.webhookUrl` webhook directly, so an instance can relay
+   * mail with no `EMAIL_ORG_SUFFIX` (medium off, outbound on) and can run the
+   * medium on the `fake` provider with nothing to relay through (medium on,
+   * outbound off). Clients gate the "invite by email" form on THIS boolean.
+   */
+  it('reports whether outbound mail is configured, independently of the medium', () => {
+    const caps = CapabilitiesResponseSchema.parse({
+      voice: { stt: false, tts: false }, email: false, emailOutbound: true,
+    });
+    expect(caps.emailOutbound).toBe(true);
+    // The medium can be on with nothing to relay through, and vice versa.
+    expect(CapabilitiesResponseSchema.parse({ voice: { stt: false, tts: false }, email: true }).emailOutbound)
+      .toBe(false);
+    expect(
+      CapabilitiesResponseSchema.safeParse({ voice: { stt: false, tts: false }, emailOutbound: 'yes' }).success,
+    ).toBe(false);
+  });
+
   it('reports whether an automatic reviewer is registered', () => {
     const caps = CapabilitiesResponseSchema.parse({
       voice: { stt: false, tts: false }, email: true, emailReviewer: true,
