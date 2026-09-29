@@ -103,6 +103,126 @@ describe('client identification', () => {
 });
 
 /* ================================================================== *
+ * Agent visibility — tags, messaging, grants, analytics (wire shape)
+ *
+ * No server ships these routes yet (the SDK contract lands first), so these
+ * drive the client against a scripted fetch: the method, path, query and body
+ * it sends, and how it reads the reply.
+ * ================================================================== */
+
+describe('agent visibility (scripted fetch)', () => {
+  interface Sent { method: string; url: URL; body: unknown }
+
+  /** A fetch that records every request and answers with `status` + `reply`. */
+  function scripted(reply: unknown, status = 200): { fetch: typeof fetch; sent: Sent[] } {
+    const sent: Sent[] = [];
+    const f = (async (url: string | URL, init?: RequestInit) => {
+      sent.push({
+        method: init?.method ?? 'GET',
+        url: new URL(String(url)),
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
+      });
+      return new Response(status === 204 ? null : JSON.stringify(reply), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as unknown as typeof fetch;
+    return { fetch: f, sent };
+  }
+
+  const client = (f: typeof fetch) => new SparrowClient({ server: 'http://x', token: 'ses_test', fetch: f });
+
+  const agentRes = {
+    id: 'agt_a/1', name: 'fable', orgId: 'org_a', emailAddress: null, online: false,
+    lastSeenAt: null, sharing: 'org', roleTitle: null, createdAt: '2026-09-29T00:00:00Z',
+    tags: ['cubes'], messaging: 'tags',
+  };
+  const grant = {
+    id: 'grt_aB3dE5fG7hJ9', orgId: 'org_a', principalId: 'agt_b', principalKind: 'agent',
+    scope: 'tag:cubes', grantedBy: 'usr_a', createdAt: '2026-09-29T00:00:00Z',
+  };
+
+  it('putAgentTags PUTs { tags } to /orgs/:orgId/agents/:id/tags and returns the agent', async () => {
+    const s = scripted({ agent: agentRes });
+    const res = await client(s.fetch).putAgentTags('org_a', 'agt_a/1', ['cubes']);
+    expect(s.sent[0]!.method).toBe('PUT');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/agents/agt_a%2F1/tags');
+    expect(s.sent[0]!.body).toEqual({ tags: ['cubes'] });
+    expect(res.agent.tags).toEqual(['cubes']);
+    expect(res.agent.messaging).toBe('tags');
+  });
+
+  it('putAgentMessaging PUTs { messaging } to /orgs/:orgId/agents/:id/messaging and returns the agent', async () => {
+    const s = scripted({ agent: agentRes });
+    const res = await client(s.fetch).putAgentMessaging('org_a', 'agt_a', 'tags');
+    expect(s.sent[0]!.method).toBe('PUT');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/agents/agt_a/messaging');
+    expect(s.sent[0]!.body).toEqual({ messaging: 'tags' });
+    expect(res.agent.messaging).toBe('tags');
+  });
+
+  it('listGrants GETs /orgs/:id/grants and unwraps items', async () => {
+    const s = scripted({ items: [grant] });
+    const items = await client(s.fetch).listGrants('org_a');
+    expect(s.sent[0]!.method).toBe('GET');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/grants');
+    expect(items).toEqual([grant]);
+  });
+
+  it('createGrant POSTs { principalId, scope } and unwraps { grant }', async () => {
+    const s = scripted({ grant }, 201);
+    const g = await client(s.fetch).createGrant('org_a', { principalId: 'agt_b', scope: 'tag:cubes' });
+    expect(s.sent[0]!.method).toBe('POST');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/grants');
+    expect(s.sent[0]!.body).toEqual({ principalId: 'agt_b', scope: 'tag:cubes' });
+    expect(g).toEqual(grant);
+  });
+
+  it('deleteGrant DELETEs /orgs/:id/grants/:grantId and returns { ok: true }', async () => {
+    const s = scripted({ ok: true });
+    await expect(client(s.fetch).deleteGrant('org_a', 'grt_aB3dE5fG7hJ9')).resolves.toEqual({ ok: true });
+    expect(s.sent[0]!.method).toBe('DELETE');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/grants/grt_aB3dE5fG7hJ9');
+  });
+
+  it('getAgentAnalytics GETs /orgs/:orgId/agents/:id/analytics?window= and parses the report', async () => {
+    const mt = { messages: 1, tokens: 4 };
+    const report = {
+      window: '24h', from: '2026-09-28T00:00:00Z', to: '2026-09-29T00:00:00Z',
+      totals: { sent: 1, received: 0, tokensSent: 4, tokensReceived: 0 },
+      withAgents: mt, withHumans: { messages: 0, tokens: 0 }, inDms: mt, inRooms: { messages: 0, tokens: 0 },
+      counterparts: [{ kind: 'agent', id: 'agt_b', name: 'reviewer', ...mt }],
+      rooms: [],
+      series: [{ start: '2026-09-28T00:00:00Z', ...mt }],
+    };
+    const s = scripted(report);
+    const res = await client(s.fetch).getAgentAnalytics('org_a', 'agt_a', '24h');
+    expect(s.sent[0]!.method).toBe('GET');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/agents/agt_a/analytics');
+    expect(s.sent[0]!.url.searchParams.get('window')).toBe('24h');
+    expect(res).toEqual(report);
+  });
+
+  it('a 403 refusal surfaces its reason on ApiError', async () => {
+    const s = scripted(
+      { error: { code: 'forbidden', message: "reviewer's messaging is set to none", reason: 'messaging_policy' } },
+      403,
+    );
+    const err = await client(s.fetch).putAgentMessaging('org_a', 'agt_a', 'any').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(403);
+    expect((err as ApiError).code).toBe('forbidden');
+    expect((err as ApiError).reason).toBe('messaging_policy');
+  });
+
+  it('an error without a reason leaves ApiError.reason undefined', async () => {
+    const s = scripted({ error: { code: 'not_found', message: 'nope' } }, 404);
+    const err = await client(s.fetch).listGrants('org_a').catch((e: unknown) => e);
+    expect((err as ApiError).reason).toBeUndefined();
+  });
+});
+
+/* ================================================================== *
  * Accounts & sessions
  * ================================================================== */
 

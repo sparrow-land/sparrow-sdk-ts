@@ -79,6 +79,12 @@ export const newActivityEntryId = (): string => `act_${nano12()}`;
  */
 export const newHintDeliveryId = (): string => `hdl_${nano12()}`;
 
+/**
+ * `grt_` + 12-char base62 nanoid (a delegated tag-authority grant: a principal
+ * holding `tags:*` or `tag:<slug>` in one org).
+ */
+export const newGrantId = (): string => `grt_${nano12()}`;
+
 /* ------------------------------------------------------------------ *
  * Secrets — `<prefix>_` + 32-char base62 (~190 bits). Stored hashed
  * (sha256); the plaintext is shown exactly once at mint time.

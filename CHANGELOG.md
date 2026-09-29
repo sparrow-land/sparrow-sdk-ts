@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-29
+
+### Added
+
+- Agent visibility wire contract — tags, a per-agent messaging policy,
+  delegated grants and per-agent analytics. The SDK ships first; servers
+  implement the routes after.
+  - `Agent.tags` (sorted `string[]`) and `Agent.messaging`
+    (`'any' | 'tags' | 'none'`), also on the agent's own `GET /me` principal
+    and on the org governance list. Both default (`[]`, `'any'`) when a server
+    does not send them, so older servers still parse.
+  - `AgentTagSchema` (lowercase slug, `^[a-z0-9][a-z0-9-]{0,31}$`),
+    `AGENT_TAG_MAX` (32), `AGENT_TAGS_MAX` (10), `AgentMessagingPolicySchema`,
+    `PutAgentTagsRequestSchema` (≤ 10, unique) / `PutAgentTagsResponseSchema`,
+    `PutAgentMessagingRequestSchema` / `PutAgentMessagingResponseSchema`.
+  - Grants: `newGrantId()` (`grt_`), `GrantScopeSchema` (`tags:*` or
+    `tag:<slug>`, strict on `CreateGrantRequestSchema`), `GrantSchema` (its
+    `scope` is read as any non-empty string so newer scope kinds still parse),
+    `CreateGrantResponseSchema` (`{ grant }`), `GrantListResponseSchema`
+    (`{ items }`). Deleting a grant returns `{ ok: true }`.
+  - Analytics: `AgentAnalyticsWindowSchema` (`24h | 7d | 30d | all`),
+    `AgentAnalyticsQuerySchema`, `AgentAnalyticsResponseSchema` and its parts
+    (for `window=all`, `from` is the agent's creation time).
+  - `SparrowClient`: `putAgentTags(orgId, agentId, tags)` and
+    `putAgentMessaging(orgId, agentId, messaging)` (`PUT
+    /orgs/:orgId/agents/:agentId/tags|messaging`), `listGrants(orgId)`,
+    `createGrant(orgId, body)`, `deleteGrant(orgId, grantId)` (`/orgs/:orgId/grants`),
+    and `getAgentAnalytics(orgId, agentId, window)` (`GET
+    /orgs/:orgId/agents/:agentId/analytics?window=`).
+  - `ForbiddenReasonSchema` (`self | outranked | grant_required |
+    messaging_policy`), an optional `reason` on the error envelope, and
+    `ApiError.reason`, so a caller can tell why a `403` was refused.
+
 ## [0.1.1] - 2026-09-22
 
 ### Added

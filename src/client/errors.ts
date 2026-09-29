@@ -1,19 +1,29 @@
-import type { ErrorCode } from '../types/index.js';
+import type { ErrorCode, ForbiddenReason } from '../types/index.js';
 
 /**
  * Typed error thrown for any non-2xx API response (or a malformed one).
  * `code` is the machine error code from the API error envelope
  * (falls back to `internal` when the body is not a valid error envelope).
+ * `reason` is the envelope's optional refinement of `code` — e.g. a
+ * `ForbiddenReason` (`self`, `outranked`, `grant_required`, `messaging_policy`)
+ * on a `403` — and is `undefined` when the server sends none.
  */
 export class ApiError extends Error {
   readonly code: ErrorCode | string;
   readonly status: number;
+  readonly reason: ForbiddenReason | string | undefined;
 
-  constructor(params: { code: ErrorCode | string; status: number; message: string }) {
+  constructor(params: {
+    code: ErrorCode | string;
+    status: number;
+    message: string;
+    reason?: ForbiddenReason | string;
+  }) {
     super(params.message);
     this.name = 'ApiError';
     this.code = params.code;
     this.status = params.status;
+    this.reason = params.reason;
     // Restore prototype chain for instanceof across transpilation targets.
     Object.setPrototypeOf(this, ApiError.prototype);
   }

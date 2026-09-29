@@ -97,6 +97,29 @@ import {
   quietEventNames,
   MESSAGE_STATUS_IDS_MAX,
 } from './constants.js';
+import {
+  AgentSchema,
+  VisibilityAgentSchema,
+  MePrincipalSchema,
+  OrgAgentGovernanceSchema,
+  UpdateAgentResponseSchema,
+  AgentTagSchema,
+  AgentMessagingPolicySchema,
+  PutAgentTagsRequestSchema,
+  PutAgentTagsResponseSchema,
+  PutAgentMessagingRequestSchema,
+  PutAgentMessagingResponseSchema,
+  GrantScopeSchema,
+  GrantSchema,
+  CreateGrantRequestSchema,
+  CreateGrantResponseSchema,
+  GrantListResponseSchema,
+  ForbiddenReasonSchema,
+  AgentAnalyticsWindowSchema,
+  AgentAnalyticsQuerySchema,
+  AgentAnalyticsResponseSchema,
+} from './schemas.js';
+import { AGENT_TAG_MAX, AGENT_TAGS_MAX } from './constants.js';
 
 const memberRef = {
   id: 'mem_x7YtR2wQ9zKe',
@@ -758,5 +781,189 @@ describe('misc', () => {
   it('HealthzResponseSchema', () => {
     expect(HealthzResponseSchema.parse({ ok: true, version: '3.0.0' }).version).toBe('3.0.0');
     expect(HealthzResponseSchema.safeParse({ ok: false, version: 'x' }).success).toBe(false);
+  });
+});
+
+/* ================================================================== *
+ * Agent visibility — tags, messaging policy, grants, analytics
+ * ================================================================== */
+
+describe('agent visibility', () => {
+  const agentRes = {
+    id: 'agt_pQ9rT2vX5mLk', name: 'deploy-bot', orgId: 'org_V1StGXR8z5jd',
+    emailAddress: null, online: false, lastSeenAt: null, sharing: 'org' as const,
+    roleTitle: null, createdAt: '2026-08-20T00:00:00Z',
+  };
+  const grant = {
+    id: 'grt_aB3dE5fG7hJ9', orgId: 'org_V1StGXR8z5jd', principalId: 'agt_pQ9rT2vX5mLk',
+    principalKind: 'agent' as const, scope: 'tag:cubes', grantedBy: 'usr_dK3fA9qL2mNp',
+    createdAt: '2026-09-29T00:00:00Z',
+  };
+
+  it('AgentTagSchema is a lowercase slug of 1..32 starting with a letter or digit', () => {
+    for (const t of ['cubes', 'a', '0', 'code-reviewers', 'x'.repeat(AGENT_TAG_MAX)]) {
+      expect(AgentTagSchema.parse(t)).toBe(t);
+    }
+    for (const t of ['', '-cubes', 'Cubes', 'cu bes', 'cu_bes', 'x'.repeat(AGENT_TAG_MAX + 1), 'é']) {
+      expect(AgentTagSchema.safeParse(t).success).toBe(false);
+    }
+    expect(AGENT_TAG_MAX).toBe(32);
+    expect(AGENT_TAGS_MAX).toBe(10);
+  });
+
+  it('AgentMessagingPolicySchema is any|tags|none', () => {
+    for (const m of ['any', 'tags', 'none']) expect(AgentMessagingPolicySchema.parse(m)).toBe(m);
+    expect(AgentMessagingPolicySchema.safeParse('humans').success).toBe(false);
+  });
+
+  it('AgentSchema carries tags + messaging, defaulted so pre-visibility servers parse', () => {
+    const old = AgentSchema.parse(agentRes);
+    expect(old.tags).toEqual([]);
+    expect(old.messaging).toBe('any');
+    const now = AgentSchema.parse({ ...agentRes, tags: ['cubes', 'reviewers'], messaging: 'tags' });
+    expect(now.tags).toEqual(['cubes', 'reviewers']);
+    expect(now.messaging).toBe('tags');
+    expect(AgentSchema.safeParse({ ...agentRes, messaging: 'humans' }).success).toBe(false);
+  });
+
+  it('every surface that returns the agent resource carries the new fields', () => {
+    const vis = VisibilityAgentSchema.parse({
+      agent: { ...agentRes, tags: ['cubes'] }, owner: { id: 'usr_a', displayName: 'Ada' }, sharedBy: null,
+    });
+    expect(vis.agent.tags).toEqual(['cubes']);
+    expect(vis.agent.messaging).toBe('any');
+    expect(UpdateAgentResponseSchema.parse({ agent: agentRes }).agent.tags).toEqual([]);
+  });
+
+  it("the agent's own GET /me carries its tags + messaging (defaulted)", () => {
+    const base = { type: 'agent', id: 'agt_a', name: 'fable', orgId: 'org_a', owner: { id: 'usr_a', displayName: 'Ada' } };
+    const old = MePrincipalSchema.parse(base);
+    expect(old.type === 'agent' && old.tags).toEqual([]);
+    expect(old.type === 'agent' && old.messaging).toBe('any');
+    const now = MePrincipalSchema.parse({ ...base, tags: ['cubes'], messaging: 'none' });
+    expect(now.type === 'agent' && now.tags).toEqual(['cubes']);
+    expect(now.type === 'agent' && now.messaging).toBe('none');
+  });
+
+  it('the org governance list carries tags + messaging (defaulted)', () => {
+    const row = {
+      agent: { id: 'agt_a', name: 'fable', createdAt: '2026-08-20T00:00:00Z' },
+      owner: { id: 'usr_a', displayName: 'Ada' },
+    };
+    const old = OrgAgentGovernanceSchema.parse(row);
+    expect(old.agent.tags).toEqual([]);
+    expect(old.agent.messaging).toBe('any');
+    const now = OrgAgentGovernanceSchema.parse({ ...row, agent: { ...row.agent, tags: ['cubes'], messaging: 'tags' } });
+    expect(now.agent.tags).toEqual(['cubes']);
+    expect(now.agent.messaging).toBe('tags');
+  });
+
+  it('PutAgentTagsRequestSchema replaces the set: valid slugs, at most 10, no duplicates', () => {
+    expect(PutAgentTagsRequestSchema.parse({ tags: [] }).tags).toEqual([]);
+    expect(PutAgentTagsRequestSchema.parse({ tags: ['cubes', 'reviewers'] }).tags).toEqual(['cubes', 'reviewers']);
+    const ten = Array.from({ length: AGENT_TAGS_MAX }, (_, i) => `t${i}`);
+    expect(PutAgentTagsRequestSchema.parse({ tags: ten }).tags).toHaveLength(10);
+    expect(PutAgentTagsRequestSchema.safeParse({ tags: [...ten, 't10'] }).success).toBe(false);
+    expect(PutAgentTagsRequestSchema.safeParse({ tags: ['cubes', 'cubes'] }).success).toBe(false);
+    expect(PutAgentTagsRequestSchema.safeParse({ tags: ['Cubes'] }).success).toBe(false);
+    expect(PutAgentTagsRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('PutAgentMessagingRequestSchema is { messaging }', () => {
+    expect(PutAgentMessagingRequestSchema.parse({ messaging: 'none' })).toEqual({ messaging: 'none' });
+    expect(PutAgentMessagingRequestSchema.safeParse({ messaging: 'all' }).success).toBe(false);
+    expect(PutAgentMessagingRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('tags and messaging PUTs return the agent, as PATCH /me/agents/:id does', () => {
+    const body = { agent: { ...agentRes, tags: ['cubes'], messaging: 'tags' } };
+    expect(PutAgentTagsResponseSchema.parse(body).agent.tags).toEqual(['cubes']);
+    expect(PutAgentMessagingResponseSchema.parse(body).agent.messaging).toBe('tags');
+  });
+
+  it("GrantScopeSchema is 'tags:*' or 'tag:<slug>'", () => {
+    for (const s of ['tags:*', 'tag:cubes', 'tag:0', `tag:${'x'.repeat(32)}`]) {
+      expect(GrantScopeSchema.parse(s)).toBe(s);
+    }
+    for (const s of ['tags:cubes', 'tag:*', 'tag:', 'tag:Cubes', 'tag:-x', `tag:${'x'.repeat(33)}`, 'cubes', 'admin']) {
+      expect(GrantScopeSchema.safeParse(s).success).toBe(false);
+    }
+  });
+
+  it('GrantSchema: id, orgId, principal (human|agent), scope, grantedBy, createdAt', () => {
+    expect(GrantSchema.parse(grant)).toEqual(grant);
+    expect(GrantSchema.parse({ ...grant, principalId: 'usr_x', principalKind: 'human', scope: 'tags:*' }).principalKind)
+      .toBe('human');
+    expect(GrantSchema.safeParse({ ...grant, principalKind: 'bot' }).success).toBe(false);
+    // A response's scope is read loosely: a newer server's scope kind still parses.
+    expect(GrantSchema.parse({ ...grant, scope: 'rooms:*' }).scope).toBe('rooms:*');
+    expect(GrantSchema.safeParse({ ...grant, scope: '' }).success).toBe(false);
+    const { grantedBy: _g, ...noGrantor } = grant;
+    expect(GrantSchema.safeParse(noGrantor).success).toBe(false);
+  });
+
+  it('CreateGrantRequestSchema is { principalId, scope } (strict scope); the response is { grant }', () => {
+    expect(CreateGrantRequestSchema.parse({ principalId: 'agt_a', scope: 'tags:*' }))
+      .toEqual({ principalId: 'agt_a', scope: 'tags:*' });
+    expect(CreateGrantRequestSchema.safeParse({ principalId: '', scope: 'tags:*' }).success).toBe(false);
+    expect(CreateGrantRequestSchema.safeParse({ principalId: 'agt_a', scope: 'tag:' }).success).toBe(false);
+    expect(CreateGrantRequestSchema.safeParse({ scope: 'tags:*' }).success).toBe(false);
+    expect(CreateGrantRequestSchema.safeParse({ principalId: 'agt_a', scope: 'rooms:*' }).success).toBe(false);
+    expect(CreateGrantResponseSchema.parse({ grant })).toEqual({ grant });
+    expect(CreateGrantResponseSchema.safeParse(grant).success).toBe(false);
+  });
+
+  it('GrantListResponseSchema is { items: Grant[] }', () => {
+    expect(GrantListResponseSchema.parse({ items: [grant] }).items[0]!.id).toBe('grt_aB3dE5fG7hJ9');
+    expect(GrantListResponseSchema.parse({ items: [] }).items).toEqual([]);
+    expect(GrantListResponseSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('ForbiddenReasonSchema names every visibility refusal', () => {
+    for (const r of ['self', 'outranked', 'grant_required', 'messaging_policy']) {
+      expect(ForbiddenReasonSchema.parse(r)).toBe(r);
+    }
+    expect(ForbiddenReasonSchema.safeParse('nope').success).toBe(false);
+  });
+
+  it('ErrorResponseSchema carries an optional reason; an unknown one still parses (forward-compatible)', () => {
+    const e = ErrorResponseSchema.parse({ error: { code: 'forbidden', message: 'x', reason: 'outranked' } });
+    expect(e.error.reason).toBe('outranked');
+    expect(ErrorResponseSchema.parse({ error: { code: 'forbidden', message: 'x' } }).error.reason).toBeUndefined();
+    expect(ErrorResponseSchema.parse({ error: { code: 'forbidden', message: 'x', reason: 'future' } }).error.reason)
+      .toBe('future');
+  });
+
+  it('AgentAnalyticsWindowSchema is 24h|7d|30d|all; the query requires it', () => {
+    for (const w of ['24h', '7d', '30d', 'all']) expect(AgentAnalyticsWindowSchema.parse(w)).toBe(w);
+    expect(AgentAnalyticsWindowSchema.safeParse('1y').success).toBe(false);
+    expect(AgentAnalyticsQuerySchema.parse({ window: '30d' }).window).toBe('30d');
+    expect(AgentAnalyticsQuerySchema.safeParse({}).success).toBe(false);
+  });
+
+  it('AgentAnalyticsResponseSchema matches the wire contract', () => {
+    const mt = { messages: 3, tokens: 120 };
+    const body = {
+      window: '7d', from: '2026-09-22T00:00:00Z', to: '2026-09-29T00:00:00Z',
+      totals: { sent: 10, received: 7, tokensSent: 400, tokensReceived: 250 },
+      withAgents: mt, withHumans: mt, inDms: mt, inRooms: mt,
+      counterparts: [
+        { kind: 'agent', id: 'agt_b', name: 'reviewer', messages: 5, tokens: 200 },
+        { kind: 'human', id: 'usr_a', name: 'Ada', messages: 1, tokens: 10 },
+      ],
+      rooms: [{ roomId: 'room_a', name: 'ops', messages: 4, tokens: 90 }],
+      series: [{ start: '2026-09-22T00:00:00Z', messages: 2, tokens: 60 }],
+    };
+    expect(AgentAnalyticsResponseSchema.parse(body)).toEqual(body);
+    const zero = { ...body, counterparts: [], rooms: [], series: [] };
+    expect(AgentAnalyticsResponseSchema.parse(zero).series).toEqual([]);
+    expect(AgentAnalyticsResponseSchema.safeParse({ ...body, window: '1y' }).success).toBe(false);
+    expect(AgentAnalyticsResponseSchema.safeParse({ ...body, totals: { ...body.totals, sent: -1 } }).success).toBe(false);
+    expect(AgentAnalyticsResponseSchema.safeParse({ ...body, inDms: { messages: 1.5, tokens: 1 } }).success).toBe(false);
+    expect(
+      AgentAnalyticsResponseSchema.safeParse({ ...body, counterparts: [{ ...body.counterparts[0], kind: 'bot' }] }).success,
+    ).toBe(false);
+    const { series: _s, ...noSeries } = body;
+    expect(AgentAnalyticsResponseSchema.safeParse(noSeries).success).toBe(false);
   });
 });

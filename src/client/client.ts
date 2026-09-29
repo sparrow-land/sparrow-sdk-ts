@@ -28,6 +28,11 @@ import {
   CreateAgentResponseSchema,
   ListAgentsResponseSchema,
   UpdateAgentResponseSchema,
+  PutAgentTagsResponseSchema,
+  PutAgentMessagingResponseSchema,
+  GrantListResponseSchema,
+  CreateGrantResponseSchema,
+  AgentAnalyticsResponseSchema,
   CreateRoomResponseSchema,
   GetRoomResponseSchema,
   UpdateRoomResponseSchema,
@@ -139,6 +144,13 @@ import {
   type EnrollmentSummary,
   type CreateAgentResponse,
   type VisibilityAgent,
+  type PutAgentTagsResponse,
+  type PutAgentMessagingResponse,
+  type AgentMessagingPolicy,
+  type Grant,
+  type CreateGrantRequest,
+  type AgentAnalyticsWindow,
+  type AgentAnalyticsResponse,
   type Room,
   type ListMembersResponse,
   type Member,
@@ -936,6 +948,88 @@ export class SparrowClient {
       schema: ListAgentsResponseSchema,
     });
     return res.items;
+  }
+
+  /* ============================================================ *
+   * Agent visibility — tags, messaging policy, grants, analytics
+   * ============================================================ */
+
+  /**
+   * `PUT /orgs/:orgId/agents/:agentId/tags` — REPLACE the agent's tag set (≤ 10 lowercase
+   * slugs; `[]` clears). Every tag added or removed must be within the caller's
+   * authority (owner / org owner/admin / `tags:*`: any; `tag:x`: only `x`);
+   * refusals are `403` with `ApiError.reason` `self` | `outranked` |
+   * `grant_required`.
+   */
+  putAgentTags(orgId: string, agentId: string, tags: string[]): Promise<PutAgentTagsResponse> {
+    return this.request('PUT', `/orgs/${enc(orgId)}/agents/${enc(agentId)}/tags`, {
+      schema: PutAgentTagsResponseSchema,
+      body: { tags },
+    });
+  }
+
+  /**
+   * `PUT /orgs/:orgId/agents/:agentId/messaging` — set which agents this agent may DM
+   * (`any` | `tags` | `none`). Allowed for the owner, org owners/admins, and
+   * holders of `tags:*` or of `tag:x` for a tag the agent carries.
+   */
+  putAgentMessaging(
+    orgId: string,
+    agentId: string,
+    messaging: AgentMessagingPolicy,
+  ): Promise<PutAgentMessagingResponse> {
+    return this.request('PUT', `/orgs/${enc(orgId)}/agents/${enc(agentId)}/messaging`, {
+      schema: PutAgentMessagingResponseSchema,
+      body: { messaging },
+    });
+  }
+
+  /** `GET /orgs/:orgId/grants` — every delegated grant in the org (any member may read). */
+  async listGrants(orgId: string): Promise<Grant[]> {
+    const res = await this.request('GET', `/orgs/${enc(orgId)}/grants`, {
+      schema: GrantListResponseSchema,
+    });
+    return res.items;
+  }
+
+  /**
+   * `POST /orgs/:orgId/grants` — grant `scope` (`tags:*` or `tag:<slug>`) to a
+   * human or agent in the org. Org owners/admins may grant any scope; `tags:*`
+   * holders only `tag:<slug>`. Nobody grants what they do not hold.
+   */
+  async createGrant(orgId: string, body: CreateGrantRequest): Promise<Grant> {
+    const res = await this.request('POST', `/orgs/${enc(orgId)}/grants`, {
+      schema: CreateGrantResponseSchema,
+      body,
+    });
+    return res.grant;
+  }
+
+  /**
+   * `DELETE /orgs/:orgId/grants/:grantId` — revoke a grant (org owners/admins,
+   * or the grant's creator).
+   */
+  deleteGrant(orgId: string, grantId: string): Promise<OkResponse> {
+    return this.request('DELETE', `/orgs/${enc(orgId)}/grants/${enc(grantId)}`, {
+      schema: OkResponseSchema,
+    });
+  }
+
+  /**
+   * `GET /orgs/:orgId/agents/:agentId/analytics?window=` — how much an agent talks and to
+   * whom (messages, and tokens estimated from message text), over the last
+   * `24h`, `7d`, `30d` or `all` time. Readable by the owner, org owners/admins,
+   * and holders of a grant covering one of the agent's tags.
+   */
+  getAgentAnalytics(
+    orgId: string,
+    agentId: string,
+    window: AgentAnalyticsWindow,
+  ): Promise<AgentAnalyticsResponse> {
+    return this.request('GET', `/orgs/${enc(orgId)}/agents/${enc(agentId)}/analytics`, {
+      schema: AgentAnalyticsResponseSchema,
+      query: { window },
+    });
   }
 
   /* ============================================================ *
@@ -2266,22 +2360,25 @@ export class SparrowClient {
       code: parsed.success ? parsed.data.error.code : 'internal',
       status,
       message: parsed.success ? parsed.data.error.message : `HTTP ${status}`,
+      reason: parsed.success ? parsed.data.error.reason : undefined,
     });
   }
 
   private async throwFromResponse(res: Response): Promise<never> {
     let code: string = 'internal';
     let message: string = res.statusText || `HTTP ${res.status}`;
+    let reason: string | undefined;
     try {
       const parsed = ErrorResponseSchema.safeParse(await res.json());
       if (parsed.success) {
         code = parsed.data.error.code;
         message = parsed.data.error.message;
+        reason = parsed.data.error.reason;
       }
     } catch {
       /* non-JSON error body — keep defaults */
     }
-    throw new ApiError({ code, status: res.status, message });
+    throw new ApiError({ code, status: res.status, message, reason });
   }
 }
 

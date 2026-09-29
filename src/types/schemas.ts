@@ -12,6 +12,8 @@ import {
   AGENT_NAME_MAX,
   ROLE_TITLE_MAX,
   ROLE_INSTRUCTIONS_MAX,
+  AGENT_TAG_MAX,
+  AGENT_TAGS_MAX,
   ORG_NAME_MIN,
   ORG_NAME_MAX,
   ORG_SLUG_MIN,
@@ -112,6 +114,21 @@ export const ErrorCodeSchema = z.enum([
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 
+/**
+ * Why a `403 forbidden` was refused, when the route names it (`error.reason`).
+ * The agent-visibility routes (tags, messaging, grants) and agent↔agent DMs use:
+ *  - `self`: the actor tried to change its own tags, policy or grants;
+ *  - `outranked`: the target holds a grant the actor does not also hold;
+ *  - `grant_required`: the actor holds no grant covering the change;
+ *  - `messaging_policy`: one side's `messaging` setting forbids this agent DM
+ *    (the message says which side).
+ * `ErrorResponse.error.reason` stays a plain string so a newer server's reason
+ * never makes an older client lose the whole error envelope; match it against
+ * this enum.
+ */
+export const ForbiddenReasonSchema = z.enum(['self', 'outranked', 'grant_required', 'messaging_policy']);
+export type ForbiddenReason = z.infer<typeof ForbiddenReasonSchema>;
+
 /* ================================================================== *
  * Shared refs & validators
  * ================================================================== */
@@ -176,6 +193,33 @@ export type RoleTitleInput = z.infer<typeof RoleTitleSchema>;
 export const RoleInstructionsSchema = z.string().max(ROLE_INSTRUCTIONS_MAX).nullable();
 export type RoleInstructionsInput = z.infer<typeof RoleInstructionsSchema>;
 
+/* ---- Agent tags & messaging policy (agent visibility) ---- *
+ *
+ * A TAG is an org-scoped lowercase label on an agent (`cubes`, `reviewers`),
+ * created implicitly on first use and visible to everyone in the org. An agent
+ * carries at most AGENT_TAGS_MAX. Tags are what the messaging policy and the
+ * delegated `tag:<slug>` grants refer to. Humans are not tagged.
+ */
+
+/** One tag: a lowercase slug, `^[a-z0-9][a-z0-9-]{0,31}$` (1..AGENT_TAG_MAX chars). */
+export const AgentTagSchema = z
+  .string()
+  .max(AGENT_TAG_MAX)
+  .regex(/^[a-z0-9][a-z0-9-]*$/, 'tag must be a lowercase slug: letters, digits or hyphens, not starting with a hyphen');
+export type AgentTag = z.infer<typeof AgentTagSchema>;
+
+/**
+ * An agent's messaging policy — which AGENTS it may DM (humans and room posts are
+ * never restricted by it):
+ *  - `any` (default): today's rule — any agent it has met in a room;
+ *  - `tags`: only agents sharing at least one tag with it;
+ *  - `none`: no agent DMs at all.
+ * An agent↔agent DM needs BOTH agents' policies to allow it; existing severs
+ * still apply on top.
+ */
+export const AgentMessagingPolicySchema = z.enum(['any', 'tags', 'none']);
+export type AgentMessagingPolicy = z.infer<typeof AgentMessagingPolicySchema>;
+
 /**
  * Room-name validator: trimmed, a leading `#` run stripped, non-empty, ≤ 80 chars.
  *
@@ -221,6 +265,12 @@ export const ErrorResponseSchema = z.object({
      * that ignore it are unaffected.
      */
     docs: z.string().optional(),
+    /**
+     * A machine-readable refinement of `code`, when the route gives one — e.g. a
+     * {@link ForbiddenReasonSchema} value on a `403`. Additive and deliberately an
+     * open string (see ForbiddenReasonSchema); absent on most errors.
+     */
+    reason: z.string().optional(),
   }),
 });
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
@@ -520,6 +570,12 @@ export const MePrincipalSchema = z.discriminatedUnion('type', [
     roleTitle: z.string().nullable().default(null),
     roleInstructions: z.string().nullable().default(null),
     roleUpdatedAt: IsoDateTimeSchema.nullable().default(null),
+    /**
+     * The agent's own tags (sorted) and messaging policy, as on the Agent
+     * resource. Defaulted so a pre-visibility server still parses.
+     */
+    tags: z.array(z.string()).default([]),
+    messaging: AgentMessagingPolicySchema.default('any'),
     /** The caller's own effective presence. Defaulted so a pre-presence server still parses. */
     presence: MePresenceSchema.default(OFFLINE_PRESENCE),
   }),
@@ -938,6 +994,10 @@ export const OrgAgentGovernanceSchema = z.object({
     name: z.string(),
     /** The derived address, or `null` with the email medium off. */
     emailAddress: z.string().nullable().default(null),
+    /** The agent's tags (sorted). Defaulted so a pre-visibility server still parses. */
+    tags: z.array(z.string()).default([]),
+    /** The agent's messaging policy. Defaulted so a pre-visibility server still parses. */
+    messaging: AgentMessagingPolicySchema.default('any'),
     createdAt: IsoDateTimeSchema,
   }),
   owner: HumanRefSchema,
@@ -1095,6 +1155,17 @@ export const AgentSchema = z.object({
    * pre-role server still parses.
    */
   roleTitle: z.string().nullable().default(null),
+  /**
+   * The agent's ORG-VISIBLE tags, sorted (see {@link AgentTagSchema}). Read as
+   * plain strings so a response never fails on a tag an older client would not
+   * accept on a write. Defaulted so a pre-visibility server still parses.
+   */
+  tags: z.array(z.string()).default([]),
+  /**
+   * Which agents this agent may DM (see {@link AgentMessagingPolicySchema}).
+   * Defaulted to `any` — today's rule — so a pre-visibility server still parses.
+   */
+  messaging: AgentMessagingPolicySchema.default('any'),
   createdAt: IsoDateTimeSchema,
 });
 export type Agent = z.infer<typeof AgentSchema>;
@@ -1323,6 +1394,169 @@ export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
 /** PATCH /me/agents/:id (200): the updated agent resource. */
 export const UpdateAgentResponseSchema = z.object({ agent: AgentSchema });
 export type UpdateAgentResponse = z.infer<typeof UpdateAgentResponseSchema>;
+
+/* ================================================================== *
+ * Agent visibility — tags, messaging policy, grants, analytics
+ * ================================================================== */
+
+/**
+ * PUT /orgs/:orgId/agents/:agentId/tags body — REPLACES the agent's tag set (at most
+ * AGENT_TAGS_MAX, no duplicates; `[]` clears). Every tag ADDED or REMOVED must be
+ * within the caller's authority (owner / org owner/admin / `tags:*`: any tag;
+ * `tag:x`: only `x`); unchanged tags need none. Refusals are `403` with a
+ * {@link ForbiddenReasonSchema} reason.
+ */
+export const PutAgentTagsRequestSchema = z.object({
+  tags: z
+    .array(AgentTagSchema)
+    .max(AGENT_TAGS_MAX)
+    .refine((tags) => new Set(tags).size === tags.length, { message: 'tags must be unique' }),
+});
+export type PutAgentTagsRequest = z.infer<typeof PutAgentTagsRequestSchema>;
+
+/** PUT /orgs/:orgId/agents/:agentId/tags (200): the updated agent resource. */
+export const PutAgentTagsResponseSchema = z.object({ agent: AgentSchema });
+export type PutAgentTagsResponse = z.infer<typeof PutAgentTagsResponseSchema>;
+
+/**
+ * PUT /orgs/:orgId/agents/:agentId/messaging body. Allowed for the agent's owner, org
+ * owners/admins, and holders of `tags:*` or of `tag:x` for any `x` the agent
+ * carries — never the agent itself (`403 self`).
+ */
+export const PutAgentMessagingRequestSchema = z.object({ messaging: AgentMessagingPolicySchema });
+export type PutAgentMessagingRequest = z.infer<typeof PutAgentMessagingRequestSchema>;
+
+/** PUT /orgs/:orgId/agents/:agentId/messaging (200): the updated agent resource. */
+export const PutAgentMessagingResponseSchema = z.object({ agent: AgentSchema });
+export type PutAgentMessagingResponse = z.infer<typeof PutAgentMessagingResponseSchema>;
+
+/**
+ * A grant's scope:
+ *  - `tag:<slug>`: add/remove that tag on agents, and change the messaging policy
+ *    of agents carrying it;
+ *  - `tags:*`: the same for every tag in the org, plus the right to grant
+ *    `tag:<slug>` to others (the chief-of-staff grant).
+ */
+export const GrantScopeSchema = z
+  .string()
+  .regex(/^(?:tags:\*|tag:[a-z0-9][a-z0-9-]{0,31})$/, "scope must be 'tags:*' or 'tag:<slug>'");
+export type GrantScope = z.infer<typeof GrantScopeSchema>;
+
+/**
+ * A delegated authority grant (`grt_` id): `principalId` (a human `usr_` or an
+ * agent `agt_` in the org) holds `scope` in `orgId`, granted by `grantedBy` (a
+ * principal id). Guard rails: nobody acts on themselves, nobody acts on a
+ * principal holding a grant they do not also hold, and nobody grants a scope
+ * they do not hold (org owners/admins exempt).
+ *
+ * `scope` is read LOOSELY here (any non-empty string) so a scope kind added by a
+ * newer server never stops an older client from listing grants; writes are
+ * strict ({@link CreateGrantRequestSchema} uses {@link GrantScopeSchema}).
+ */
+export const GrantSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  principalId: z.string(),
+  principalKind: PrincipalKindSchema,
+  scope: z.string().min(1),
+  grantedBy: z.string(),
+  createdAt: IsoDateTimeSchema,
+});
+export type Grant = z.infer<typeof GrantSchema>;
+
+/**
+ * POST /orgs/:orgId/grants body. Org owners/admins may create any scope;
+ * `tags:*` holders only `tag:<slug>`.
+ */
+export const CreateGrantRequestSchema = z.object({
+  principalId: z.string().min(1),
+  scope: GrantScopeSchema,
+});
+export type CreateGrantRequest = z.infer<typeof CreateGrantRequestSchema>;
+
+/** POST /orgs/:orgId/grants (201): `{ grant }`. */
+export const CreateGrantResponseSchema = z.object({ grant: GrantSchema });
+export type CreateGrantResponse = z.infer<typeof CreateGrantResponseSchema>;
+
+/**
+ * GET /orgs/:orgId/grants → `{ items: Grant[] }` (any org member may read).
+ * DELETE /orgs/:orgId/grants/:grantId → `{ ok: true }` (org owners/admins, or
+ * the grant's creator).
+ */
+export const GrantListResponseSchema = listResponseSchema(GrantSchema);
+export type GrantListResponse = z.infer<typeof GrantListResponseSchema>;
+
+/** An analytics window: the last 24 hours, 7 days, 30 days, or all time. */
+export const AgentAnalyticsWindowSchema = z.enum(['24h', '7d', '30d', 'all']);
+export type AgentAnalyticsWindow = z.infer<typeof AgentAnalyticsWindowSchema>;
+
+/** GET /orgs/:orgId/agents/:agentId/analytics query (`?window=`). */
+export const AgentAnalyticsQuerySchema = z.object({ window: AgentAnalyticsWindowSchema });
+export type AgentAnalyticsQuery = z.infer<typeof AgentAnalyticsQuerySchema>;
+
+const Count = z.number().int().nonnegative();
+
+/** A `{ messages, tokens }` pair — one slice of an agent's traffic. */
+export const AgentAnalyticsMeasureSchema = z.object({ messages: Count, tokens: Count });
+export type AgentAnalyticsMeasure = z.infer<typeof AgentAnalyticsMeasureSchema>;
+
+/** One DM counterpart in an analytics report (top 20, DMs only). */
+export const AgentAnalyticsCounterpartSchema = z.object({
+  kind: PrincipalKindSchema,
+  id: z.string(),
+  name: z.string(),
+  messages: Count,
+  tokens: Count,
+});
+export type AgentAnalyticsCounterpart = z.infer<typeof AgentAnalyticsCounterpartSchema>;
+
+/** One room in an analytics report (top 20). */
+export const AgentAnalyticsRoomSchema = z.object({
+  roomId: z.string(),
+  name: z.string(),
+  messages: Count,
+  tokens: Count,
+});
+export type AgentAnalyticsRoom = z.infer<typeof AgentAnalyticsRoomSchema>;
+
+/** One bucket of the series: hourly for `24h`, daily otherwise. `start` is the bucket's start. */
+export const AgentAnalyticsPointSchema = z.object({
+  start: IsoDateTimeSchema,
+  messages: Count,
+  tokens: Count,
+});
+export type AgentAnalyticsPoint = z.infer<typeof AgentAnalyticsPointSchema>;
+
+/**
+ * GET /orgs/:orgId/agents/:agentId/analytics?window= (200) — how much an agent talks, and to
+ * whom, over `[from, to)`. Counting: when a message is stored the sender (if an
+ * agent) records one `sent` and each agent recipient one `received`; in a DM the
+ * counterpart is the other member, in a room the unit is the room. `tokens` is an
+ * ESTIMATE from message text, `ceil(body chars / 4)` — the conversation, not the
+ * model spend behind it. Readable by the agent's owner, org owners/admins, and
+ * holders of a grant covering one of its tags.
+ */
+export const AgentAnalyticsResponseSchema = z.object({
+  window: AgentAnalyticsWindowSchema,
+  /** Start of the window; for `all`, the agent's creation time (`Agent.createdAt`). */
+  from: IsoDateTimeSchema,
+  /** End of the window (the time of the request). */
+  to: IsoDateTimeSchema,
+  totals: z.object({
+    sent: Count,
+    received: Count,
+    tokensSent: Count,
+    tokensReceived: Count,
+  }),
+  withAgents: AgentAnalyticsMeasureSchema,
+  withHumans: AgentAnalyticsMeasureSchema,
+  inDms: AgentAnalyticsMeasureSchema,
+  inRooms: AgentAnalyticsMeasureSchema,
+  counterparts: z.array(AgentAnalyticsCounterpartSchema),
+  rooms: z.array(AgentAnalyticsRoomSchema),
+  series: z.array(AgentAnalyticsPointSchema),
+});
+export type AgentAnalyticsResponse = z.infer<typeof AgentAnalyticsResponseSchema>;
 
 /* ================================================================== *
  * Rooms & members

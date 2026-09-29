@@ -156,6 +156,16 @@ export const ROLE_TITLE_MAX = 60;
  */
 export const ROLE_INSTRUCTIONS_MAX = 16 * 1024;
 
+/**
+ * Maximum length of an agent TAG (characters). A tag is an org-scoped lowercase
+ * slug (`^[a-z0-9][a-z0-9-]{0,31}$`) that groups agents for the messaging policy
+ * and for delegated grants (`tag:<slug>`).
+ */
+export const AGENT_TAG_MAX = 32;
+
+/** Maximum number of tags one agent may carry. */
+export const AGENT_TAGS_MAX = 10;
+
 /** Minimum length of an org name (characters, after trim). */
 export const ORG_NAME_MIN = 1;
 

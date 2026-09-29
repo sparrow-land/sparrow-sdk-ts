@@ -16,6 +16,7 @@ import {
   newExternalContactId,
   newActivityEntryId,
   newHintDeliveryId,
+  newGrantId,
   newInviteToken,
   newEnrollmentToken,
   newAgentKey,
@@ -50,6 +51,8 @@ describe('id generators', () => {
     ['newExternalContactId', newExternalContactId, /^ext_[0-9A-Za-z]{12}$/],
     ['newActivityEntryId', newActivityEntryId, /^act_[0-9A-Za-z]{12}$/],
     ['newHintDeliveryId', newHintDeliveryId, /^hdl_[0-9A-Za-z]{12}$/],
+    // agent visibility — delegated tag authority
+    ['newGrantId', newGrantId, /^grt_[0-9A-Za-z]{12}$/],
   ] as const)('%s matches its 12-char prefix', (_name, gen, re) => {
     expect(gen()).toMatch(re);
   });
