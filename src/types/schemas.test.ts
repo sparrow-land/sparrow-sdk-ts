@@ -109,6 +109,7 @@ import {
   PutAgentTagsResponseSchema,
   PutAgentMessagingRequestSchema,
   PutAgentMessagingResponseSchema,
+  GetOrgAgentResponseSchema,
   GrantScopeSchema,
   GrantSchema,
   CreateGrantRequestSchema,
@@ -879,6 +880,19 @@ describe('agent visibility', () => {
     const body = { agent: { ...agentRes, tags: ['cubes'], messaging: 'tags' } };
     expect(PutAgentTagsResponseSchema.parse(body).agent.tags).toEqual(['cubes']);
     expect(PutAgentMessagingResponseSchema.parse(body).agent.messaging).toBe('tags');
+  });
+
+  it('GetOrgAgentResponseSchema is { agent, owner } with tags and messaging defaulted', () => {
+    const owner = { id: 'usr_a', displayName: 'Jake' };
+    const parsed = GetOrgAgentResponseSchema.parse({ agent: { ...agentRes, tags: ['cubes'], messaging: 'none' }, owner });
+    expect(parsed.agent.tags).toEqual(['cubes']);
+    expect(parsed.agent.messaging).toBe('none');
+    expect(parsed.owner).toEqual(owner);
+    const { tags: _t, messaging: _m, ...bare } = { ...agentRes, tags: [], messaging: 'any' };
+    const old = GetOrgAgentResponseSchema.parse({ agent: bare, owner });
+    expect(old.agent.tags).toEqual([]);
+    expect(old.agent.messaging).toBe('any');
+    expect(GetOrgAgentResponseSchema.safeParse({ agent: agentRes }).success).toBe(false);
   });
 
   it("GrantScopeSchema is 'tags:*' or 'tag:<slug>'", () => {

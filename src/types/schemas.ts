@@ -1419,6 +1419,14 @@ export const PutAgentTagsResponseSchema = z.object({ agent: AgentSchema });
 export type PutAgentTagsResponse = z.infer<typeof PutAgentTagsResponseSchema>;
 
 /**
+ * GET /orgs/:orgId/agents/:agentId (200): one agent in the org, with its owner — how a
+ * caller reads another agent's current tags and messaging policy. Readable by any
+ * org member (human or agent); `404` outside the org.
+ */
+export const GetOrgAgentResponseSchema = z.object({ agent: AgentSchema, owner: HumanRefSchema });
+export type GetOrgAgentResponse = z.infer<typeof GetOrgAgentResponseSchema>;
+
+/**
  * PUT /orgs/:orgId/agents/:agentId/messaging body. Allowed for the agent's owner, org
  * owners/admins, and holders of `tags:*` or of `tag:x` for any `x` the agent
  * carries — never the agent itself (`403 self`).

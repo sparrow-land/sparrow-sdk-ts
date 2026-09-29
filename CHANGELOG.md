@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `createGrant(orgId, body)`, `deleteGrant(orgId, grantId)` (`/orgs/:orgId/grants`),
     and `getAgentAnalytics(orgId, agentId, window)` (`GET
     /orgs/:orgId/agents/:agentId/analytics?window=`).
+  - `GetOrgAgentResponseSchema` (`{ agent, owner }`) and
+    `SparrowClient.getOrgAgent(orgId, agentId)` (`GET
+    /orgs/:orgId/agents/:agentId`): one agent in the org with its current tags
+    and messaging policy, readable by any org member (human or agent).
   - `ForbiddenReasonSchema` (`self | outranked | grant_required |
     messaging_policy`), an optional `reason` on the error envelope, and
     `ApiError.reason`, so a caller can tell why a `403` was refused.

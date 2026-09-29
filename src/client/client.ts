@@ -29,6 +29,7 @@ import {
   ListAgentsResponseSchema,
   UpdateAgentResponseSchema,
   PutAgentTagsResponseSchema,
+  GetOrgAgentResponseSchema,
   PutAgentMessagingResponseSchema,
   GrantListResponseSchema,
   CreateGrantResponseSchema,
@@ -145,6 +146,7 @@ import {
   type CreateAgentResponse,
   type VisibilityAgent,
   type PutAgentTagsResponse,
+  type GetOrgAgentResponse,
   type PutAgentMessagingResponse,
   type AgentMessagingPolicy,
   type Grant,
@@ -953,6 +955,16 @@ export class SparrowClient {
   /* ============================================================ *
    * Agent visibility — tags, messaging policy, grants, analytics
    * ============================================================ */
+
+  /**
+   * `GET /orgs/:orgId/agents/:agentId` — one agent in the org and its owner (its
+   * current tags and messaging policy included). Any org member may read it.
+   */
+  getOrgAgent(orgId: string, agentId: string): Promise<GetOrgAgentResponse> {
+    return this.request('GET', `/orgs/${enc(orgId)}/agents/${enc(agentId)}`, {
+      schema: GetOrgAgentResponseSchema,
+    });
+  }
 
   /**
    * `PUT /orgs/:orgId/agents/:agentId/tags` — REPLACE the agent's tag set (≤ 10 lowercase

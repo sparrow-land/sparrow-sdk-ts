@@ -161,6 +161,16 @@ describe('agent visibility (scripted fetch)', () => {
     expect(res.agent.messaging).toBe('tags');
   });
 
+  it('getOrgAgent GETs /orgs/:orgId/agents/:id and returns { agent, owner }', async () => {
+    const s = scripted({ agent: agentRes, owner: { id: 'usr_a', displayName: 'Jake' } });
+    const res = await client(s.fetch).getOrgAgent('org_a', 'agt_a/1');
+    expect(s.sent[0]!.method).toBe('GET');
+    expect(s.sent[0]!.url.pathname).toBe('/api/v1/orgs/org_a/agents/agt_a%2F1');
+    expect(res.agent.tags).toEqual(['cubes']);
+    expect(res.agent.messaging).toBe('tags');
+    expect(res.owner.displayName).toBe('Jake');
+  });
+
   it('listGrants GETs /orgs/:id/grants and unwraps items', async () => {
     const s = scripted({ items: [grant] });
     const items = await client(s.fetch).listGrants('org_a');
